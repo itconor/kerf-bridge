@@ -1,0 +1,20 @@
+[Unit]
+Description=Kerf Bridge (GRBL laser on the network)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/kerf-bridge -config /etc/kerf-bridge/config.json
+User=kerf
+Group=dialout
+# The camera over the bed (/dev/video*).
+SupplementaryGroups=video
+# Port 23 (pass-through for LightBurn) is privileged on Linux.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+Restart=always
+RestartSec=2
+# Stopping holds and resets a running job first; give it time.
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target
