@@ -66,6 +66,36 @@ ESP32, STM32 first) and waits for GRBL's banner, sending Ctrl-X if it doesn't
 come. **Opening a port resets whatever is on it — if this machine also
 drives a 3D printer, set `serialPort` instead of letting it search.**
 
+### First-run set-up
+
+The web page opens with a set-up wizard until it has been finished once
+(`setupDone` in the settings), and again from Settings → *Set-up wizard*:
+
+1. **Laser** — the USB serial devices it can see, laser chips first. *Test*
+   opens one and waits for GRBL's greeting (the port in use is reported
+   without being reopened); the speed it answered at is saved with it. Only
+   ports the bridge lists can be tested or chosen, and a test takes turns
+   with the bridge's own search, so the two never open a port at once.
+   Choosing a different port while the laser is free lets go of the old one
+   straight away.
+2. **Camera** — every USB camera, saved by its stable `/dev/v4l/by-id`
+   name, with the chosen one live below; or *No camera*. With none found
+   the setting is left alone, so one plugged in later is still found.
+3. **Name** — what Kerf lists it as. A new name is announced over Bonjour
+   at once (from Settings too), no restart.
+4. **Connect** — how to find it in Kerf, and LightBurn's address and port.
+
+### Mac: Kerf Bridge.app
+
+On a Mac the bridge ships as a menu bar app (macOS 13 or later), signed with
+a Developer ID and notarised: a bolt in the menu bar shows the laser's state
+and has *Open Kerf Bridge…*, *Start at Login* and *Quit*. It opens its page
+on the first run, for the set-up wizard, and logs to
+`~/Library/Logs/Kerf Bridge.log`. The same program run from Terminal behaves
+as everywhere else. `macos/make-app.sh` builds the app, signs it, has Apple
+notarise it through the Apple account signed in to Xcode, staples it and
+makes the DMG — the Mac download on trykerf.com is made with it.
+
 ### Camera
 
 Plug a USB camera (UVC, MJPEG — nearly all of them) into the same machine
@@ -126,6 +156,9 @@ JSON throughout; errors are `{"error": "…"}` with 4xx/5xx.
 | `POST /api/camera/focus` | `{"lock": true}` fixes the focus where autofocus has it, `{"focus": N}` fixes it at N, `{"focus": -1}` back to auto; saved as `cameraFocus` |
 | `GET /api/ports` | serial ports seen |
 | `GET`/`PUT /api/config` | name, port, baud (applied at next connect) |
+| `GET /api/setup` | for the wizard: ports, cameras, the laser, the current choices, this computer's addresses |
+| `POST /api/setup/test-port` | `{"port": "/dev/ttyUSB0"}` → `ok`, `banner`, `baud`, `inUse`, `message`; listed ports only |
+| `POST /api/setup` | any of `serialPort`, `baud`, `cameraDevice`, `name`, `done` |
 
 **Not yet:** pairing. Anyone on the LAN can use the page and the API, as with
 ser2net. Keep it off networks you don't trust until pairing lands.
@@ -138,7 +171,7 @@ file, byte for byte — compare its SHA-256 with the site's `SHA256SUMS`:
 
 ```
 go test -race ./...
-V=0.4.0
+V=0.5.0
 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -buildvcs=false -ldflags "-s -w -X main.Version=$V" -o kerf-bridge-linux-arm64 .
 CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build -trimpath -buildvcs=false -ldflags "-s -w -X main.Version=$V" -o kerf-bridge-linux-armv7 .
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -ldflags "-s -w -X main.Version=$V" -o kerf-bridge-linux-x64 .
@@ -149,3 +182,11 @@ CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -buildvcs=false -ldfl
 record of the git commit they were built from; `go version -m` shows that is
 the only difference. The Mac build uses cgo and Apple's linker, so it isn't
 byte-for-byte.)
+
+The Mac app, signed with your own Developer ID certificate but not
+notarised, from a universal program built as above with `CGO_ENABLED=1`
+for `arm64` and `amd64` and joined with `lipo`:
+
+```
+SIGN_ONLY=1 macos/make-app.sh kerf-bridge-mac 0.5.0 "Kerf Bridge.app"
+```

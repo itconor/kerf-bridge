@@ -37,6 +37,7 @@ type Camera struct {
 	err      string
 	info     CameraInfo
 	dev      *videoDevice
+	restart  bool
 }
 
 // CameraInfo is what GET /api/camera reports.
@@ -183,8 +184,22 @@ func (c *Camera) Frame(after uint64, timeout time.Duration) ([]byte, uint64, err
 	}
 }
 
+// Restart closes the camera if it's open, so the next picture comes from
+// the camera in the settings now.
+func (c *Camera) Restart() {
+	c.mu.Lock()
+	if c.running {
+		c.restart = true
+	}
+	c.failedAt, c.err = time.Time{}, ""
+	c.mu.Unlock()
+}
+
 // run streams until nobody has asked for a frame for cameraIdle.
 func (c *Camera) run() {
+	c.mu.Lock()
+	c.restart = false
+	c.mu.Unlock()
 	cfg := c.cfg()
 	found, err := findCamera(cfg)
 	var dev *videoDevice
@@ -212,12 +227,20 @@ func (c *Camera) run() {
 	for {
 		c.mu.Lock()
 		idle := time.Since(c.lastWant) > cameraIdle
+		restart := c.restart
 		c.mu.Unlock()
-		if idle {
-			log.Printf("camera: closed, nobody watching")
+		if idle || restart {
+			if restart {
+				log.Printf("camera: closed, switching to the camera in the settings")
+			} else {
+				log.Printf("camera: closed, nobody watching")
+			}
 			c.mu.Lock()
 			c.running = false
 			c.frame = nil
+			// Wake anyone waiting for a frame, so they open the new one.
+			close(c.next)
+			c.next = make(chan struct{})
 			c.mu.Unlock()
 			return
 		}

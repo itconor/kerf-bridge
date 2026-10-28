@@ -132,41 +132,62 @@ func findCamera(cfg Config) (cameraFound, error) {
 		}
 		return cameraFound{name, cfg.CameraDevice}, nil
 	}
-	// USB cameras by id first (stable names), then any /dev/videoN. A
-	// camera shows several nodes; only the capture one answers below.
-	var nodes []string
+	cams, err := listCameras()
+	if len(cams) == 0 {
+		return cameraFound{}, err
+	}
+	return cams[0], nil
+}
+
+// listCameras finds the USB cameras that capture video: by id first, named
+// by their stable /dev/v4l/by-id path (a /dev/videoN number can change
+// with the order they're found at boot), then any other /dev/videoN. A
+// camera shows several nodes; only the capture one answers captureName.
+func listCameras() ([]cameraFound, error) {
+	type node struct{ dev, id string }
+	var nodes []node
 	ids, _ := filepath.Glob("/dev/v4l/by-id/*-video-index*")
 	sort.Strings(ids)
 	for _, id := range ids {
 		if dev, err := filepath.EvalSymlinks(id); err == nil {
-			nodes = append(nodes, dev)
+			nodes = append(nodes, node{dev, id})
 		}
 	}
 	all, _ := filepath.Glob("/dev/video*")
 	sort.Slice(all, func(i, j int) bool { return len(all[i]) < len(all[j]) || len(all[i]) == len(all[j]) && all[i] < all[j] })
-	nodes = append(nodes, all...)
+	for _, dev := range all {
+		nodes = append(nodes, node{dev, ""})
+	}
 	seen := map[string]bool{}
 	var denied error
-	for _, dev := range nodes {
-		if seen[dev] {
+	var cams []cameraFound
+	for _, n := range nodes {
+		if seen[n.dev] {
 			continue
 		}
-		seen[dev] = true
-		name, err := captureName(dev)
+		seen[n.dev] = true
+		name, err := captureName(n.dev)
 		if os.Getenv("KERF_CAMDEBUG") != "" {
-			log.Printf("camera debug: %s: %q %v", dev, name, err)
+			log.Printf("camera debug: %s: %q %v", n.dev, name, err)
 		}
 		if errors.Is(err, unix.EACCES) {
 			denied = err
 		}
 		if err == nil {
-			return cameraFound{name, dev}, nil
+			dev := n.dev
+			if n.id != "" {
+				dev = n.id
+			}
+			cams = append(cams, cameraFound{name, dev})
 		}
 	}
-	if denied != nil {
-		return cameraFound{}, errors.New("a camera is plugged in but the bridge isn't allowed to open it — add the bridge's user to the video group")
+	if len(cams) > 0 {
+		return cams, nil
 	}
-	return cameraFound{}, errors.New("no camera is plugged in")
+	if denied != nil {
+		return nil, errors.New("a camera is plugged in but the bridge isn't allowed to open it — add the bridge's user to the video group")
+	}
+	return nil, errors.New("no camera is plugged in")
 }
 
 // captureName opens a node and returns its name if it's a USB camera that

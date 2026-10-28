@@ -157,6 +157,21 @@ func (m *Machine) Attach(port io.ReadWriteCloser, name string, baud int, banner 
 	m.logf("laser on %s lost: %v", name, err)
 }
 
+// Disconnect lets go of the laser's port so the bridge connects again with
+// new settings — only while nobody is using the laser.
+func (m *Machine) Disconnect() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.port == nil {
+		return nil
+	}
+	if m.controller != ControllerNone || (m.job != nil && m.job.State.active()) {
+		return errors.New("a job or another program is using it now")
+	}
+	m.logf("letting go of the laser on %s for new settings", m.portName)
+	return m.port.Close()
+}
+
 // settingsRetry: how often `$$` is tried again while the laser can't answer.
 var settingsRetry = 5 * time.Second
 

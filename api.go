@@ -13,7 +13,7 @@ import (
 var webFiles embed.FS
 
 // Version is set at build time with -ldflags "-X main.Version=…".
-var Version = "0.4.0"
+var Version = "0.5.0"
 
 // maxJobBytes caps an upload: a dithered 300 mm photo is ~40 MB of G-code.
 const maxJobBytes = 200 << 20
@@ -29,15 +29,18 @@ const maxJobBytes = 200 << 20
 //	GET  /api/ports           serial ports the bridge can see
 //	GET  /api/config, PUT /api/config
 //	GET  /api/camera, /api/camera/frame, /api/camera/stream, POST /api/camera/focus (camera.go)
+//	GET  /api/setup, POST /api/setup, POST /api/setup/test-port (setup.go)
 func NewAPI(m *Machine, cfg *ConfigStore, cam *Camera, ha *HomeAssistant) http.Handler {
 	mux := http.NewServeMux()
 	cameraRoutes(mux, cam)
+	setupRoutes(mux, m, cfg, cam)
 	web, _ := fs.Sub(webFiles, "web")
 	mux.Handle("GET /", http.FileServerFS(web))
 
 	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) {
 		snap := m.Snapshot()
-		out := map[string]any{"bridge": map[string]any{"version": Version, "name": cfg.Get().Name}, "machine": snap}
+		c := cfg.Get()
+		out := map[string]any{"bridge": map[string]any{"version": Version, "name": c.Name, "setupDone": c.SetupDone}, "machine": snap}
 		if ha != nil {
 			out["homeAssistant"] = ha.Status()
 		}

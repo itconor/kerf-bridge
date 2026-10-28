@@ -38,6 +38,9 @@ type Config struct {
 	MQTTPrefix string `json:"mqttPrefix"`
 	// A picture of the bed every few seconds while a job runs.
 	MQTTCamera bool `json:"mqttCamera"`
+	// The set-up wizard has been finished once; until then the web page
+	// opens with it.
+	SetupDone bool `json:"setupDone"`
 }
 
 func defaultConfig() Config {
@@ -47,9 +50,17 @@ func defaultConfig() Config {
 }
 
 type ConfigStore struct {
-	mu   sync.Mutex
-	path string
-	cfg  Config
+	mu       sync.Mutex
+	path     string
+	cfg      Config
+	onChange []func(old, new Config)
+}
+
+// OnChange calls f after every saved change, with the settings before and after.
+func (s *ConfigStore) OnChange(f func(old, new Config)) {
+	s.mu.Lock()
+	s.onChange = append(s.onChange, f)
+	s.mu.Unlock()
 }
 
 // LoadConfig reads the file, creating it with defaults on first run.
@@ -76,9 +87,17 @@ func (s *ConfigStore) Get() Config {
 
 func (s *ConfigStore) Update(f func(*Config)) error {
 	s.mu.Lock()
+	old := s.cfg
 	f(&s.cfg)
+	now, watchers := s.cfg, s.onChange
 	s.mu.Unlock()
-	return s.save()
+	if err := s.save(); err != nil {
+		return err
+	}
+	for _, w := range watchers {
+		w(old, now)
+	}
+	return nil
 }
 
 // save writes atomically: a half-written config must never be what the

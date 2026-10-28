@@ -39,6 +39,25 @@
   .msg { padding:10px 12px; border-radius:10px; background:rgba(255,59,48,.12); color:var(--stop); display:none; }
   .warn { color:#c77700; }
   #camview { width:100%; aspect-ratio:4/3; object-fit:contain; background:#000; border-radius:10px; display:block; }
+  #camview[hidden], #wizcam[hidden] { display:none; }
+  /* First-run set-up */
+  #wiz { position:fixed; inset:0; background:rgba(0,0,0,.5); display:flex; justify-content:center; align-items:flex-start; overflow:auto; padding:16px; z-index:10; }
+  #wiz[hidden] { display:none; }
+  #wiz .card { width:100%; max-width:560px; margin:4vh 0; }
+  #wiz h1 { font-size:22px; margin:2px 0 6px; }
+  #wiz .step { color:var(--muted); font-size:13px; }
+  .opts { display:grid; gap:8px; margin:12px 0; }
+  .opt { display:flex; gap:10px; align-items:flex-start; padding:10px 12px; border:1px solid var(--line); border-radius:10px; cursor:pointer; }
+  .opt input { margin-top:3px; }
+  .opt small { display:block; color:var(--muted); overflow-wrap:anywhere; }
+  .tag { font-size:12px; padding:1px 7px; border-radius:20px; background:rgba(52,199,89,.15); color:var(--ok); margin-left:6px; }
+  .good { color:var(--ok); }
+  .bad { color:var(--stop); }
+  .nav { display:flex; gap:10px; justify-content:space-between; align-items:center; margin-top:16px; flex-wrap:wrap; }
+  #wizcam { width:100%; aspect-ratio:4/3; object-fit:contain; background:#000; border-radius:10px; display:block; }
+  #wiz input[type=text] { width:100%; }
+  #wiz ol { padding-left:20px; }
+  #wiz code { font:14px ui-monospace, Menlo, Consolas, monospace; background:var(--bg); padding:1px 5px; border-radius:5px; }
 </style>
 </head>
 <body>
@@ -114,11 +133,25 @@
       <label>Discovery prefix <input id="mqttPrefix" placeholder="homeassistant" style="width:100%"></label>
       <label class="row" style="gap:8px"><input type="checkbox" id="mqttCamera"> Send a picture of the bed every few seconds while a job runs</label>
       <p class="muted" id="haStatus" style="margin:0"></p>
-      <div class="row"><button id="save">Save</button><strong id="saved" style="color:var(--ok)" hidden>✓ Saved</strong><span class="muted">Port and baud apply the next time the laser connects; Home Assistant reconnects straight away.</span></div>
+      <div class="row"><button id="save">Save</button><button id="rerun">Set-up wizard</button><strong id="saved" style="color:var(--ok)" hidden>✓ Saved</strong><span class="muted">Port and baud apply the next time the laser connects; Home Assistant reconnects straight away.</span></div>
       <p class="muted" id="raw"></p>
     </div>
   </section>
 </main>
+
+<div id="wiz" hidden><section class="card" role="dialog" aria-modal="true" aria-labelledby="wiztitle">
+  <div class="step" id="wizstep"></div>
+  <h1 id="wiztitle"></h1>
+  <div id="wizbody"></div>
+  <p class="msg" id="wizerr"></p>
+  <div class="nav">
+    <button id="wizlater">Not now</button>
+    <div class="row">
+      <button id="wizback">Back</button>
+      <button class="primary" id="wiznext">Next</button>
+    </div>
+  </div>
+</section></div>
 <script>
 const $ = (id) => document.getElementById(id);
 let busy = false;
@@ -206,6 +239,8 @@ $("jogcancel").onclick = () => command("$J=G91X0");
 async function loadSettings() {
   const [cfg, ports] = await Promise.all([api("/api/config"), api("/api/ports")]);
   $("cfgName").value = cfg.name;
+  // Loaded again after the set-up wizard: start the list afresh.
+  $("cfgPort").replaceChildren(new Option("Find automatically", ""));
   for (const p of ports) {
     const o = document.createElement("option");
     o.value = p.name;
@@ -274,7 +309,214 @@ api("/api/camera").then(c => {
   showCamera();
 }).catch(() => {});
 
+// First-run set-up: the laser, the camera, a name, then how to connect.
+// It opens by itself until it has been finished once.
+const wiz = { step: 0, data: null, port: null, baud: 0, tested: {}, camera: null, name: "" };
+const STEPS = ["Your laser", "Camera", "Name", "Connect"];
+
+function el(tag, props = {}, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (k === "class") e.className = v; else if (k in e) e[k] = v; else e.setAttribute(k, v);
+  }
+  for (const k of kids) if (k != null) e.append(k);
+  return e;
+}
+function wizError(msg) {
+  $("wizerr").textContent = msg || "";
+  $("wizerr").style.display = msg ? "block" : "none";
+}
+async function openWizard() {
+  try {
+    wiz.data = await api("/api/setup");
+  } catch (e) { return showError(e); }
+  const d = wiz.data;
+  wiz.step = 0;
+  wiz.port = d.serialPort || "";
+  wiz.baud = d.baud || 0;
+  wiz.tested = {};
+  wiz.camera = d.cameraDevice === "" ? (d.cameras[0] ? d.cameras[0].device : "off") : d.cameraDevice;
+  wiz.name = d.name;
+  $("wiz").hidden = false;
+  showStep();
+}
+function closeWizard() {
+  $("wiz").hidden = true;
+  $("wizcam") && ($("wizcam").src = "");
+}
+
+function showStep() {
+  wizError("");
+  const d = wiz.data, body = $("wizbody");
+  body.replaceChildren();
+  $("wizstep").textContent = `Step ${wiz.step + 1} of ${STEPS.length}`;
+  $("wiztitle").textContent = STEPS[wiz.step];
+  $("wizback").hidden = wiz.step === 0;
+  $("wiznext").textContent = wiz.step === STEPS.length - 1 ? "Finish" : "Next";
+  $("wizlater").hidden = wiz.step === STEPS.length - 1;
+  [laserStep, cameraStep, nameStep, connectStep][wiz.step](body, d);
+}
+
+function laserStep(body, d) {
+  body.append(el("p", {}, "Plug the laser into this computer by USB and switch it on, then choose it below and press Test."));
+  const opts = el("div", { class: "opts" });
+  const choice = (value, title, detail, tag) => {
+    const r = el("input", { type: "radio", name: "wizport", value, checked: wiz.port === value });
+    r.onchange = () => { wiz.port = value; result.textContent = ""; showTest(); };
+    return el("label", { class: "opt" }, r, el("div", {}, el("strong", {}, title), tag ? el("span", { class: "tag" }, tag) : null,
+      detail ? el("small", {}, detail) : null));
+  };
+  opts.append(choice("", "Find it automatically", "The bridge tries each USB serial device until a laser answers."));
+  for (const p of d.ports) {
+    const what = [p.chip, p.product].filter(Boolean).join(" — ");
+    const hint = p.chip ? "USB serial (" + what + ") — this chip is common on laser boards" : (what || "USB serial device");
+    opts.append(choice(p.name, p.name, hint, p.connected ? "connected" : null));
+  }
+  body.append(opts);
+  if (!d.ports.length) {
+    body.append(el("p", { class: "warn" }, "No USB serial devices found. Check the laser is on and the cable is plugged in — some USB cables only charge."));
+  }
+  if (d.laser.connected) {
+    body.append(el("p", { class: "good" }, `Connected to the laser on ${d.laser.port}: ${d.laser.banner}`));
+  }
+  const test = el("button", { textContent: "Test" });
+  const rescan = el("button", { textContent: "Look again" });
+  const result = el("span", { class: "muted" });
+  body.append(el("div", { class: "row" }, test, rescan, result));
+  body.append(el("p", { class: "muted" },
+    "Testing opens the port, and opening a port restarts whatever is plugged into it. If a 3D printer or anything else is on this computer, only test the laser's port."));
+  function showTest() {
+    test.disabled = !wiz.port;
+    const t = wiz.tested[wiz.port];
+    if (t) {
+      result.className = t.ok ? "good" : "bad";
+      result.textContent = t.ok ? `✓ ${t.banner} at ${t.baud} baud` : t.message;
+    }
+  }
+  test.onclick = async () => {
+    test.disabled = true;
+    result.className = "muted";
+    result.textContent = "Testing… this can take up to half a minute.";
+    try {
+      wiz.tested[wiz.port] = await api("/api/setup/test-port", { method: "POST", body: JSON.stringify({ port: wiz.port }) });
+    } catch (e) {
+      wiz.tested[wiz.port] = { ok: false, message: e.message };
+    }
+    showTest();
+  };
+  rescan.onclick = async () => {
+    try { wiz.data = await api("/api/setup"); showStep(); } catch (e) { wizError(e.message); }
+  };
+  showTest();
+}
+
+function cameraStep(body, d) {
+  body.append(el("p", {}, "A USB camera over the bed lets you watch a burn, and Kerf uses it to line your work up. You can skip this: everything else works without one."));
+  if (!d.cameras.length) {
+    body.append(el("p", { class: "warn" }, d.cameraError ? sentence(d.cameraError) : "No camera found."));
+    // Left as it is, so a camera plugged in later is still found by itself.
+    wiz.camera = d.cameraDevice;
+    return;
+  }
+  const opts = el("div", { class: "opts" });
+  const img = el("img", { id: "wizcam", alt: "The camera's picture, live" });
+  const note = el("p", { class: "muted" });
+  const preview = () => {
+    img.hidden = wiz.camera === "off";
+    note.textContent = wiz.camera === "off" ? "No camera: the camera stays off." : "Point it at the bed so all of it is in view.";
+    img.src = wiz.camera === "off" ? "" : "/api/camera/stream?t=" + Date.now();
+  };
+  img.onerror = () => { if (!img.hidden && wiz.step === 1) setTimeout(preview, 2500); };
+  const choice = (value, title, detail) => {
+    const r = el("input", { type: "radio", name: "wizcamera", value, checked: wiz.camera === value });
+    r.onchange = async () => {
+      wiz.camera = value;
+      // Saved straight away, so the picture below is from this camera.
+      try { await api("/api/setup", { method: "POST", body: JSON.stringify({ cameraDevice: value }) }); }
+      catch (e) { return wizError(e.message); }
+      preview();
+    };
+    return el("label", { class: "opt" }, r, el("div", {}, el("strong", {}, title), detail ? el("small", {}, detail) : null));
+  };
+  for (const c of d.cameras) opts.append(choice(c.device, c.name || "USB camera", c.device));
+  opts.append(choice("off", "No camera", null));
+  body.append(opts, img, note);
+  // Show the camera picked when the step opens (saving it if it was "first found").
+  api("/api/setup", { method: "POST", body: JSON.stringify({ cameraDevice: wiz.camera }) }).then(preview, e => wizError(e.message));
+}
+function sentence(s) { s = s.charAt(0).toUpperCase() + s.slice(1); return /[.!?]$/.test(s) ? s : s + "."; }
+
+function nameStep(body) {
+  body.append(el("p", {}, "Kerf lists the bridge by this name. Something you'll recognise, like “Workshop laser”."));
+  const input = el("input", { type: "text", id: "wizname", value: wiz.name, maxLength: 60, autocomplete: "off" });
+  input.oninput = () => wiz.name = input.value;
+  body.append(input);
+  setTimeout(() => input.focus(), 0);
+}
+
+function connectStep(body, d) {
+  const addr = d.addresses && d.addresses.length ? d.addresses[0] : null;
+  const rawPort = d.rawAddr ? d.rawAddr.split(":").pop() : "";
+  const webPort = (d.httpAddr || ":8023").split(":").pop();
+  body.append(el("h2", {}, "Kerf on iPad"));
+  body.append(el("ol", {},
+    el("li", {}, "Open Kerf and go to the Laser tab."),
+    el("li", {}, "Under “Kerf Bridges on this network”, tap “", el("strong", {}, wiz.name), "”.")));
+  body.append(el("p", { class: "muted" }, "The iPad has to be on the same Wi-Fi as this computer."));
+  body.append(el("h2", {}, "LightBurn"));
+  if (rawPort) {
+    body.append(el("ol", {},
+      el("li", {}, "Devices → Create Manually → GRBL → Ethernet/TCP."),
+      el("li", {}, "Address: ", el("code", {}, addr || d.host), addr ? " (or " : null, addr ? el("code", {}, d.host) : null, addr ? ")" : null),
+      el("li", {}, "Port: ", el("code", {}, rawPort))));
+    body.append(el("p", { class: "muted" }, "One program drives the laser at a time: while LightBurn is connected, Kerf can watch and stop it but not start a job."));
+  } else {
+    body.append(el("p", {}, "The LightBurn port is turned off in this bridge's settings file (rawAddr)."));
+  }
+  body.append(el("h2", {}, "This page"));
+  body.append(el("p", {}, "Bookmark it: ", el("code", {}, `http://${addr || d.host}:${webPort}`)));
+}
+
+$("wizlater").onclick = closeWizard;
+$("wizback").onclick = () => { if (wiz.step > 0) { $("wizcam") && ($("wizcam").src = ""); wiz.step--; showStep(); } };
+$("wiznext").onclick = async () => {
+  const save = (body) => api("/api/setup", { method: "POST", body: JSON.stringify(body) });
+  const next = $("wiznext");
+  next.disabled = true;
+  try {
+    if (wiz.step === 0) {
+      const t = wiz.tested[wiz.port], d = wiz.data;
+      // The speed it answered at, or the one already known for this port;
+      // a new, untested port tries them all.
+      let baud = 0;
+      if (wiz.port && t && t.ok) baud = t.baud;
+      else if (wiz.port && d.laser.connected && d.laser.port === wiz.port) baud = d.laser.baud;
+      else if (wiz.port && wiz.port === d.serialPort) baud = wiz.baud;
+      const r = await save({ serialPort: wiz.port, baud });
+      if (r.note) alert(r.note);
+    } else if (wiz.step === 1) {
+      $("wizcam") && ($("wizcam").src = "");
+      await save({ cameraDevice: wiz.camera });
+    } else if (wiz.step === 2) {
+      await save({ name: wiz.name });
+    } else {
+      await save({ done: true });
+      closeWizard();
+      loadSettings().catch(showError);
+      return;
+    }
+    wiz.step++;
+    showStep();
+  } catch (e) {
+    wizError(e.message);
+  } finally {
+    next.disabled = false;
+  }
+};
+$("rerun").onclick = openWizard;
+
 loadSettings().catch(showError);
+api("/api/status").then(s => { if (!s.bridge.setupDone) openWizard(); }).catch(() => {});
 refresh();
 setInterval(refresh, 500);
 </script>

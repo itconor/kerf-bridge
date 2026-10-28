@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -31,6 +32,10 @@ func main() {
 
 	if *snapshot != "" {
 		os.Exit(saveSnapshot(*snapshot, *configPath))
+	}
+	app := inAppBundle()
+	if app {
+		appLog()
 	}
 
 	store, err := LoadConfig(*configPath)
@@ -66,20 +71,46 @@ func main() {
 	server := &http.Server{Handler: NewAPI(m, store, cam, ha), ReadHeaderTimeout: 10 * time.Second}
 	go server.Serve(httpLn)
 
-	mdns := StartAnnouncer(cfg, httpLn.Addr().(*net.TCPAddr).Port)
+	httpPort := httpLn.Addr().(*net.TCPAddr).Port
+	var mdnsMu sync.Mutex
+	mdns := StartAnnouncer(cfg, httpPort)
+	// A new name (from the set-up wizard or Settings) is announced at once,
+	// so Kerf lists the bridge by it without a restart.
+	store.OnChange(func(old, now Config) {
+		if old.Name == now.Name {
+			return
+		}
+		mdnsMu.Lock()
+		defer mdnsMu.Unlock()
+		mdns.Stop()
+		mdns = StartAnnouncer(now, httpPort)
+	})
+
+	shutdown := func() {
+		log.Printf("stopping")
+		// A job the bridge is streaming would otherwise stop dead mid-line
+		// when the process ends. Hold and reset instead, so it stops cleanly.
+		if j := m.Snapshot().Job; j != nil && j.State.active() {
+			log.Printf("stopping the running job first")
+			m.Stop()
+		}
+		close(stop)
+		mdnsMu.Lock()
+		mdns.Stop()
+		mdnsMu.Unlock()
+	}
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
-	<-sig
-	log.Printf("stopping")
-	// A job the bridge is streaming would otherwise stop dead mid-line when
-	// the process ends. Hold and reset instead, so it stops cleanly.
-	if j := m.Snapshot().Job; j != nil && j.State.active() {
-		log.Printf("stopping the running job first")
-		m.Stop()
+	if app {
+		// The Mac app: the menu bar runs on this thread; a signal (logging
+		// out, say) quits the same way as Quit in the menu.
+		go func() { <-sig; goQuit() }()
+		runApp(m, store, httpPort, shutdown)
+		return
 	}
-	close(stop)
-	mdns.Stop()
+	<-sig
+	shutdown()
 }
 
 func defaultConfigPath() string {

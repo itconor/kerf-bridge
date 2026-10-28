@@ -27,6 +27,8 @@ func findCamera(cfg Config) (cameraFound, error) {
 	return cameraFound{}, errNoCameraHere
 }
 
+func listCameras() ([]cameraFound, error) { return nil, errNoCameraHere }
+
 func openCamera(cameraFound, Config) (*videoDevice, error) { return nil, errNoCameraHere }
 
 func (d *videoDevice) Read(time.Duration) ([]byte, error) { return nil, errNoCameraHere }

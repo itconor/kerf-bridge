@@ -72,8 +72,11 @@ func openGRBL(name string, baud int) (serial.Port, string, error) {
 		return port, banner, nil
 	}
 	port.Close()
-	return nil, "", errors.New("no GRBL banner")
+	return nil, "", errNoBanner
 }
+
+// errNoBanner: the port opened but nothing answered as GRBL.
+var errNoBanner = errors.New("no GRBL banner")
 
 func waitBanner(port serial.Port, timeout time.Duration) (string, bool) {
 	port.SetReadTimeout(100 * time.Millisecond)
@@ -124,7 +127,10 @@ func FindGRBL(cfg Config) (serial.Port, string, int, string, error) {
 	}
 	for _, name := range ports {
 		for _, baud := range bauds {
-			if port, banner, err := openGRBL(name, baud); err == nil {
+			probeMu.Lock()
+			port, banner, err := openGRBL(name, baud)
+			probeMu.Unlock()
+			if err == nil {
 				return port, name, baud, banner, nil
 			}
 		}
